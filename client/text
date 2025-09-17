@@ -1,0 +1,452 @@
+import React, { useState, useEffect, useRef } from "react";
+import {
+  Phone,
+  PhoneOff,
+  Send,
+  User,
+  Shield,
+  MessageCircle,
+  Users,
+} from "lucide-react";
+
+const App = () => {
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [user, setUser] = useState(null);
+  const [lawyers, setLawyers] = useState([]);
+  const [selectedLawyer, setSelectedLawyer] = useState(null);
+  const [message, setMessage] = useState({});
+  const [newMessage, setNewMessage] = useState("");
+  const [ws, setWs] = useState(null);
+  const [inCall, setInCall] = useState(false);
+  const [callStatus, setCallStatus] = useState("");
+
+  const [loginForm, setLoginForm] = useState({
+    username: "",
+    password: "",
+    role: "CLIENT",
+  });
+
+  const [isRegistering, setIsRegistering] = useState(false);
+
+  const messageEndRef = useRef(null);
+
+  const scrollToBottom = () => {
+    messageEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [message]);
+
+  const connectWebSocket = (token) => {
+    const websocket = new WebSocket(`ws://localhost:3000/ws?token=${token}`);
+
+    websocket.onopen = () => {
+      console.log("Connected to WebSocket");
+    };
+
+    websocket.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+
+      switch (data.type) {
+        case "user_list":
+          setLawyers(data.lawyers || []);
+          break;
+        case "message":
+          setMessage((prev) => ({
+            ...prev,
+            [data.from]: [
+              ...(prev[data.form] || []),
+              {
+                id: Date.now(),
+                text: data.message,
+                from: data.from,
+                timestamp: new Date().toLocaleTimeString(),
+              },
+            ],
+          }));
+          break;
+        case "call_request":
+          setCallStatus(`Incoming call from ${data.from}`);
+          break;
+        case "call_accepted":
+          setInCall(true);
+          setCallStatus("Call connected");
+          break;
+        case "call_ended":
+          setInCall(false);
+          setCallStatus("Call ended");
+          setTimeout(() => setCallStatus(""), 3000);
+          break;
+      }
+    };
+
+    websocket.onclose = () => {
+      console.log("WebSocket disconnected");
+    };
+
+    setWs(websocket);
+  };
+
+  // handle login/register
+  const handleAuth = async (e) => {
+    e.preventDefault();
+
+    try {
+      const endpoint = isRegistering ? "/register" : "/login";
+      const response = await fetch(`http://localhost:3000${endpoint}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(loginForm),
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        localStorage.setItem("token", data.token);
+        setUser(data.user);
+        setIsLoggedIn(true);
+        connectWebSocket(data.token);
+      } else {
+        alert(data.error || "Authenticate failed");
+      }
+    } catch (err) {
+      console.error("Auth error:", err);
+      alert("Network error");
+    }
+  };
+
+  // send message
+  const sendMessage = () => {
+    if (!newMessage.trim() || !selectedLawyer || !ws) return;
+
+    ws.send(
+      JSON.stringify({
+        type: "message",
+        to: selectedLawyer.username,
+        message: newMessage,
+      })
+    );
+
+    setMessage((prev) => ({
+      ...prev,
+      [selectedLawyer.username]: [
+        ...(prev[selectedLawyer.username] || []),
+        {
+          id: Date.now(),
+          text: newMessage,
+          from: user.username,
+          timestamp: new Date().toLocaleTimeString(),
+          isSent: true,
+        },
+      ],
+    }));
+
+    setNewMessage("");
+  };
+
+  // start call
+  const startCall = () => {
+    if (!selectedLawyer || !ws) return;
+
+    ws.send(
+      JSON.stringify({
+        type: "call_request",
+        to: selectedLawyer.username,
+      })
+    );
+
+    setCallStatus("calling");
+  };
+
+  // end call
+  const endCall = () => {
+    if (!ws) return;
+
+    ws.send(
+      JSON.stringify({
+        type: "call_end",
+        to: selectedLawyer.username,
+      })
+    );
+
+    setInCall(false);
+    setCallStatus("");
+  };
+
+  // update lawyer status
+  const updateStatus = async (status) => {
+    try {
+      const response = await fetch('http://localhost:3000/lawyers/status',{
+        method:'POST',
+        headers:{
+          'Content-Type':'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body:JSON.stringify({ status }),
+      });
+
+      if(!response.ok) alert('Failed to update status')
+    } catch (err) {
+      console.error('Status update error:', err)
+    }
+  };
+
+  const handleKeyPress = (e) => {
+    if(e.key == 'Enter'){
+      if(e.target.name === 'message') {
+        sendMessage()
+      }
+      else{ 
+        handleAuth(e)
+      }
+    }
+  }
+
+  if(!isLoggedIn){
+    return(
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md">
+          <div className="text-center mb-8">
+            <div className="inline-flex items-center justify-center w-16 h-16 bg-indigo-100 rounded-full mb-4">
+              <Shield className="w-8 h-8 text-indigo-600" />
+            </div>
+            <h1 className="text-3xl font-bold text-gray-800 mb-2">VakeelSaab</h1>
+            <p className="text-gray-600">Legal consultation platform</p>
+          </div>
+
+          <div className="space-y-6">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Username</label>
+              <input 
+              type="text"
+              value={loginForm.username}
+              onChange={(e) => setLoginForm({...loginForm, username:e.target.value})}
+              onKeyPress={handleKeyPress}
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors"
+              placeholder="Enter your username"
+              required
+              />
+            </div>
+
+               <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Password</label>
+              <input 
+              type="password"
+              value={loginForm.password}
+              onChange={(e) => setLoginForm({...loginForm, password:e.target.value})}
+              onKeyPress={handleKeyPress}
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors"
+              placeholder="Enter your password"
+              required
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Role</label>
+              <select
+              value={loginForm.role}
+              onChange={(e) => setLoginForm({...loginForm,role:e.target.value})}
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors"
+              >
+                <option value="CLIENT">Client</option>
+                <option value="LAWYER">Lawyer</option>
+              </select>
+            </div>
+
+            <button
+            onClick={handleAuth}
+            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semmibold py-3 px-4 rounded-lg duration-200 shadow-lg hover:shadow-xl transition-colors"
+            >
+              {isRegistering ? 'Register' : 'Login'}
+            </button>
+
+          </div>
+
+          <div className="mt-6 text-center">
+            <button
+            onClick={() => setIsRegistering(!isRegistering)}
+            className="text-indigo-600 hover:text-indigo-800 font-medium transition-colors"
+            >
+              {isRegistering ? 'Already have an account? Login' : "Don't have an account? Register"}
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+
+  return (
+    <div className="h-screen bg-gray-50 flex">
+      {/* sidebar */}
+      <div className="w-80 bg-white border-r border-gray-200 flex flex-col">
+        {/* header */}
+        <div className="p-6 border-b border-gray-200">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-12 h-12 bg-indigo-600 rounded-full flex items-center justify-center">
+              <User className="w-6 h-6 text-white" />
+            </div>
+
+            <div>
+              <h3 className="font-semibold text-gray-800">{user?.username}</h3>
+              <p className="text-sm text-gray-600 capitalize">{user?.role}</p>
+            </div>
+          </div>
+
+        {user?.role === 'LAWYER' && (
+          <div className="flex gap-2">
+            <button 
+            onClick={() => updateStatus('ONLINE')}
+            className="px-3 py-1 text-xs bg-green-100 text-green-800 rounded-full hover:bg-green-200 transition-colors">
+              Online
+            </button>
+
+            <button
+            onClick={() => updateStatus('BUSY')}
+            className="px-3 py-1 text-xs bg-red-100 text-red-800 rounded-full hover:bg-red-200 transition-colors"
+            ></button>
+          </div>
+        )}
+        </div>
+
+        {/* lawyer list */}
+        <div className="flex-1 overflow-y-auto">
+          <div className="p-4">
+            <div className="flex items-center gap-2 mb-4">
+              <Users className="w-4 h-4 text-gray-600" />
+              <h4 className="font-medium text-gray-800">Available Lawyers</h4>
+            </div>
+          </div>
+
+          {lawyers.length === 0 ? (
+            <p className="text-gray-500 text-center py-8">No lawyers online</p>
+          ): (
+            <div className="space-y-2">
+              {lawyers.map((lawyer) => (
+                <button 
+                key={lawyer.username}
+                onClick={() => setSelectedLawyer(lawyer)}
+                className={`w-full p-3 rounded-lg text-left transition-colors ${
+                  selectedLawyer?.username === lawyer.username ? 'bg-indigo-100 border-indigo-200' :
+                  'bg-gray-50 hover:bg-gray-100'
+                }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-gray-800">{lawyer.username}</span>
+                    <span className={`px-2 py-1 text-xs rounded-full ${
+                      lawyer.status === 'ONLINE' ?
+                      'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                    }`}>{lawyer.status}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* chat section */}
+      <div className="flex-1 flex flex-col">
+        {selectedLawyer ? (
+          <>
+          {/* header section */}
+          <div className="p-6 bg-white border-b border-gray-200 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-indigo-600 rounded-full flex items-center justify-center">
+                <User className="w-5 h-5 text-white"/>
+              </div>
+              <div>
+                <h3 className="font-semibold text-gray-800">{selectedLawyer.username}</h3>
+                <p className="text-sm text-gray-600">{selectedLawyer.status}</p>
+              </div>
+            </div>
+
+            {user?.role === 'CLIENT' && (
+              <div className="flex items-center gap-2">
+                {callStatus && (
+                  <span className="text-sm text-gray-600 mr-4">{callStatus}</span>
+                )}
+
+                {!inCall ? (
+                  <button 
+                  onClick={startCall}
+                  disabled={selectedLawyer.status !== 'ONLINE'}
+                  className="p-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white rounded-full transition-colors"
+                  >
+                    <Phone className="w-5 h-5"/>
+                  </button>
+                ) : (
+                  <button
+                  onClick={endCall}
+                  className="p-2 bg-red-600 hover:bg-red-700 text-white rounded-full transition-colors"
+                  >
+                    <PhoneOff className="w-5 h-5"/>
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* message section */}
+          <div className="flex-1 overflow-y-auto  p-6 space-y-4">
+            {(message[selectedLawyer.username] || []).map((message) => (
+              <div
+              key={message.id}
+              className={`flex ${message.isSent ? 'justify-end' : 'justify-start'}`}
+              >
+                <div className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
+                  message.isSent
+                  ? 'bg-indigo-600 text-white'
+                  : 'bg-gray-200 text-gray-800'
+                }`}>
+                  <p>{message.text}</p>
+                  <p className={`text-xs mt-1 ${
+                    message.isSent ? 'text-indigo-200' : 'text-gray-500'
+                  }`}>{message.timestamp}</p>
+                </div>
+              </div>
+            ))}
+            <div ref={messageEndRef} />
+          </div>
+
+          {/* message input */}
+          <div className="p-6 bg-white border-t border-gray-200">
+            <div className="flex gap-3">
+              <input 
+              type="text"
+              name="message"
+              value={newMessage}
+              onChange={(e) => setNewMessage(e.target.value)}
+              onKeyPress={handleKeyPress}
+              placeholder="Type your message..."
+              className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+              />
+
+              <button
+              onClick={sendMessage}
+              className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors"
+              >
+                <Send className="w-5 h-5"/>
+              </button>
+            </div>
+          </div>
+          </>
+        ) : (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center">
+              <MessageCircle className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+              <h3 className="text-xl font-semibold text-gray-600 mb-2">Select a Lawyer</h3>
+              <p className="text-gray-500">Choose a lawyer from list to start conversation</p>
+            </div>
+          </div>
+        )}
+      </div>
+
+    </div>
+  )
+};
+
+export default App;
